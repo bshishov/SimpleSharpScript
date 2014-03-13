@@ -10,34 +10,37 @@ namespace MicroLispLib
         public readonly static LBool LTrue = new LBool(true);
         public readonly static LBool LFalse = new LBool(false);
         private readonly Dictionary<int, Dictionary<string, Delegate>> _funcs;
+        private readonly Dictionary<string, ILNode> _userFuns;
         private readonly Dictionary<string, ILNode> _globals;
-        private readonly Dictionary<string, Tuple<LList,LLambda>> _funs;
         private readonly Dictionary<string, Action<string, ILNode>> _events;
 
         public ShLisp()
         {
             _funcs = new Dictionary<int, Dictionary<string, Delegate>>();
             _globals = new Dictionary<string, ILNode>();
-            _funs = new Dictionary<string, Tuple<LList, LLambda>>();
             _events = new Dictionary<string, Action<string, ILNode>>();
+            _userFuns = new Dictionary<string, ILNode>();
 
-            Bind<LLambda, ILNode>("do", DoClause);
+            // CORE
+            Bind<ILNode, ILNode>("eval", Eval);
+            Bind<LString, ILNode>("parse", Parse);
+            Bind<LIdentifier, ILNode, LNull>("fun", Fun);
+            Bind<LIdentifier, ILNode, ILNode>("set", Set);
+            Bind<ILNode, ILNode>("pass", Pass);
+            Bind<ILNode, LNull>("print", Print);
+            Bind<ILNode, LNull>("debug", PrintRepr);
             Bind<ILNode, ILNode, ILNode, ILNode>("if", IfClause);
-            Bind<LString, ILNode, ILNode>("set", Set);
-            Bind<LString, ILNode>("get", Get);
+            Bind<ILNode, ILNode, LNull>("while", WhileClause);
+            Bind<LIdentifier, ILNode>("get", Get);
             Bind<LString, ILNode>("rem", Rem);
+            
+            // Arithmetic
             Bind<ILNode, ILNode, ILNode>("+", Add);
-            Bind<ILNode, ILNode, ILNode>("add", Add);
-
             Bind<ILNode, ILNode, ILNode>("-", Sub);
-            Bind<ILNode, ILNode, ILNode>("sub", Sub);
-
             Bind<ILNode, ILNode, ILNode>("*", Mul);
-            Bind<ILNode, ILNode, ILNode>("mul", Mul);
-
             Bind<ILNode, ILNode, ILNode>("/", Div);
-            Bind<ILNode, ILNode, ILNode>("div", Div);
 
+            // Logic
             Bind<ILNode, ILNode, ILNode>("and", And);
             Bind<ILNode, ILNode, ILNode, ILNode>("and", And);
             Bind<ILNode, ILNode, ILNode>("&", And);
@@ -47,17 +50,13 @@ namespace MicroLispLib
             Bind<ILNode, ILNode, ILNode>("|", Or);
             Bind<ILNode, ILNode, ILNode, ILNode>("|", Or);
 
+            // Comparison
             Bind<ILNode, ILNode, ILNode>("=", Eq);
             Bind<ILNode, ILNode, ILNode>("<", Less);
             Bind<ILNode, ILNode, ILNode>("<=", LessEq);
             Bind<ILNode, ILNode, ILNode>(">", Greater);
             Bind<ILNode, ILNode, ILNode>(">=", GreaterEq);
             Bind<ILNode, ILNode, ILNode>("!=", NotEq);
-
-            Bind<ILNode, ILNode>("pass", Pass);
-            Bind<LString, LNull>("print", Print);
-            Bind<ILNode, LNull>("debug", PrintRepr);
-            Bind<LString, LList, LLambda, LNull>("fun", FunFake);
         }
 
         /// <summary>
@@ -74,7 +73,7 @@ namespace MicroLispLib
                 return LNullVal;
 
             var quoted = false;
-            if (input.Length >= 3 && input[0] == '\'' && input[1] == '(')
+            if (input.Length >= 2 && input[0] == '\'')
             {
                 quoted = true;
                 input = input.Substring(1);
@@ -82,16 +81,17 @@ namespace MicroLispLib
 
             if (input[0] == '(' && input[input.Length - 1] == ')')
             {
+                input = input.Substring(1, input.Length - 2).Trim();
                 if (input.Length == 2)
-                    return new LList();
+                    return new LList(quoted);
 
                 var depth = 0;
                 char ch;
-                var lastComma = 1;
-                var lastWasWhitespace = false;
+                var lastComma = 0;
+                var lastWasWhitespace = true;
                 var ignorance = false;
-                var list = new LList();
-                for (var i = 1; i < input.Length - 2; i++)
+                var list = new LList(quoted);
+                for (var i = 0; i < input.Length; i++)
                 {
                     ch = input[i];
                     if (ch == '(') depth++;
@@ -107,8 +107,7 @@ namespace MicroLispLib
                         if (!lastWasWhitespace && depth == 0)
                         {
                             var node = Parse(input.Substring(lastComma, i - lastComma));
-                            if(!(node is LNull))
-                                list.Add(node);
+                            list.Add(node);
                             lastComma = i;
                         }
                         lastWasWhitespace = true;
@@ -119,14 +118,12 @@ namespace MicroLispLib
                     }
                 }
 
-                if (lastComma != input.Length - 1)
+                if (lastComma != input.Length)
                 {
-                    var node = Parse(input.Substring(lastComma, input.Length - 1 - lastComma));
-                    if (!(node is LNull))
-                        list.Add(node);
+                    var node = Parse(input.Substring(lastComma, input.Length - lastComma));
+                    list.Add(node);
                 }
 
-                list.Quoted = quoted;
                 return list;
             }
 
@@ -146,80 +143,89 @@ namespace MicroLispLib
                 return new LBool(boolval);
 
             if ( input[0] == '"')
-                input = input.Substring(1, input.Length - 2);
-            return new LString(input);
+                 return new LString(input.Substring(1, input.Length - 2));
+            
+            return new LIdentifier(input, quoted);
         }
 
+        private ILNode Parse(LString input)
+        {
+            return Parse(input.Value);
+        }
+        
         private ILNode Dofunction(string cmd, List<ILNode> args)
         {
-            if (HasFun(cmd, args.Count))
-            {
-                var lambda = _funs[cmd];
-                for(var i = 0; i < args.Count; i++)
-                    Set((LString)lambda.Item1[i], args[i]);
-                return ExecLambda(lambda.Item2);
-            }
-
             var del = _funcs[args.Count][cmd];
             return (ILNode)del.DynamicInvoke(args.ToArray());
         }
-
-        private ILNode ExecLambda(ILNode node)
+        
+        private ILNode DoUserFunction(string cmd, IList<ILNode> args)
         {
-            if(!(node is LLambda))
-                throw new Exception("Lambda expected");
+            const string format = "_{0}";
+            var action = _userFuns[cmd];
 
-            var lambda = node as LLambda;
-            var newlambda = new LLambda(lambda.Command);
-            
-            foreach (var n in lambda)
+            var old = new List<Tuple<string,ILNode>>();
+            for (var i = 0; i < args.Count; i++)
             {
-                var res = Exec(n);
-                if (res is LNull) continue;
-                newlambda.Add(res);
+                var key = String.Format(format, i);
+                if (_globals.ContainsKey(key))
+                    old.Add(new Tuple<string, ILNode>(key, _globals[key]));
+
+                SetVar(key, args[i]);
+            }
+            
+            var res = Eval(action);
+
+            foreach (var tuple in old)
+                SetVar(tuple.Item1,tuple.Item2);
+
+            return res;
+        }
+        
+        public ILNode Eval(ILNode node)
+        {
+            var id = node as LIdentifier;
+            if (id != null)
+            {
+                if (id.Quoted)
+                    return new LIdentifier(id.Value);
+
+                if (_globals.ContainsKey(id.Value))
+                    return _globals[id.Value];
+                return id;
             }
 
-            return Dofunction((string)newlambda.Command, newlambda);
-        }
-
-        public ILNode Exec(ILNode node)
-        {
-            if (node is LLambda) return node;
-
-            if (node is LList)
+            var list = node as LList;
+            if (list != null)
             {
-                var list = node as LList;
+                if (list.Quoted)
+                {
+                    var n = new LList();
+                    n.AddRange(list);
+                    return n;
+                }
 
                 var newList = new LList();
-                if (!list.Quoted)
-                    foreach (var n in list)
-                    {
-                        var res = Exec(n);
-                        if (res is LNull) continue;
-                        newList.Add(res);
-                    }
-                else
-                    newList = list;
+                foreach (var n in list)
+                {
+                    var res = Eval(n);
+                    //if (res is LNull) continue;
+                    newList.Add(res);
+                }
 
-                if (newList.Count >= 1 && newList[0] is LString)
+                if (newList.Count >= 1 && newList[0] is LIdentifier)
                 {
                     // key is 1st argument
-                    var key = (LString)newList[0];
-                    
-                    // if a key command is "fun" then use this as function definition
-                    if (key.Value == "fun")
-                        Fun(key, (LList)newList[1], (LLambda)newList[2]);
+                    var key = (LIdentifier)newList[0];
 
                     // if there is no function with such command - return as a list
-                    if (!HasFun(key.Value, newList.Count - 1) && !HasFunction(key.Value, newList.Count - 1)) 
-                        return newList;
-                    
-                    // if marked with ' symbol, then it's lambda
-                    if (newList.Quoted)
-                        return new LLambda(key, newList.GetRange(1, newList.Count - 1));
+                    if (HasFunction(key.Value, newList.Count - 1)) 
+                        return Dofunction((string)key, newList.GetRange(1, newList.Count - 1));
 
-                    // Execute funtion
-                    return Dofunction((string)key, newList.GetRange(1, newList.Count - 1));
+                    if(_userFuns.ContainsKey((string)key))
+                        return DoUserFunction((string)key, newList.GetRange(1, newList.Count - 1));
+
+                    throw new Exception("Undeclared identifier");
                 }
 
                 return newList;
@@ -263,15 +269,7 @@ namespace MicroLispLib
 
             return _funcs[paramsCount].ContainsKey(key);
         }
-
-        private bool HasFun(string key, int paramsCount)
-        {
-            if (!_funs.ContainsKey(key))
-                return false;
-
-            return _funs[key].Item1.Count == paramsCount;
-        }
-
+        
         public void Subscribe(string key, Action<string, ILNode> action)
         {
             if (_events.ContainsKey(key))
@@ -288,7 +286,7 @@ namespace MicroLispLib
         /// <param name="param">Value</param>
         public void SetVar<T>(string key, T param)
         {
-            Set(new LString(key), (ILNode)param);
+            Set(new LIdentifier(key), (ILNode)param);
         }
 
         /// <summary>
@@ -297,35 +295,31 @@ namespace MicroLispLib
         /// <typeparam name="T">Type of variable</typeparam>
         /// <param name="key">String key</param>
         /// <returns></returns>
-        public TLType GetVar<TLType>(string key)
-            where TLType : ILNode
+        public T GetVar<T>(string key)
+            where T : ILNode
         {
-            return (TLType)Get(new LString(key));
+            return (T)Get(new LIdentifier(key));
         }
 
         #region STDLIB
+
+        private LNull Fun(LIdentifier id, ILNode act)
+        {
+            _userFuns.Add(id.Value, act);
+            return LNullVal;
+        }
+
         private ILNode IfClause(ILNode condition, ILNode iftrue, ILNode ifelse)
         {
-            bool val;
-            if (condition is LLambda)
-            {
-                val = (bool)(LBool) ExecLambda(condition);
-            }
-            else if (condition is LBool)
-            {
-                val = (bool)(LBool)condition;
-            }
-            else
-                val = false;
+            var val = ((LBool) Eval(condition)).Value;
+            return val ? Eval(iftrue) : Eval(ifelse);
+        }
 
-            if (val)
-            {
-                if (iftrue is LLambda) return ExecLambda(iftrue);
-                return iftrue;
-            }
-
-            if (ifelse is LLambda) return ExecLambda(ifelse);
-            return ifelse;
+        private LNull WhileClause(ILNode condition, ILNode action)
+        {
+            while (((LBool)Eval(condition)).Value)
+                Eval(action);
+            return LNullVal;
         }
 
         private ILNode And(ILNode condition1, ILNode condition2)
@@ -358,31 +352,23 @@ namespace MicroLispLib
             return new LBool(val1 || val2 || val3);
         }
 
-
-        private ILNode DoClause(LLambda lambda)
+        private ILNode Get(LIdentifier id)
         {
-            if (lambda is LLambda)
-                return ExecLambda(lambda);
-            throw new Exception("Lambda expected");
-        }
-
-        private ILNode Get(LString name)
-        {
-            if (_globals.ContainsKey(name.Value))
-                return _globals[name.Value];
+            if (_globals.ContainsKey(id.Value))
+                return _globals[id.Value];
 
             throw new Exception("No such variable");
         }
 
-        private ILNode Set(LString name, ILNode val)
+        private ILNode Set(LIdentifier id, ILNode val)
         {
-            if (_globals.ContainsKey(name.Value))
-                _globals[name.Value] = val;
+            if (_globals.ContainsKey(id.Value))
+                _globals[id.Value] = val;
             else
-                _globals.Add(name.Value, val);
-            
-            if(_events.ContainsKey(name.Value))
-                _events[name.Value].Invoke(name.Value, val);
+                _globals.Add(id.Value, val);
+
+            if (_events.ContainsKey(id.Value))
+                _events[id.Value].Invoke(id.Value, val);
             return val;
         }
 
@@ -438,9 +424,9 @@ namespace MicroLispLib
             throw new Exception("Type mismatch");
         }
 
-        private LNull Print(LString node)
+        private LNull Print(ILNode node)
         {
-            Console.WriteLine((string)node);
+            Console.WriteLine(node);
             return LNullVal;
         }
 
@@ -519,20 +505,6 @@ namespace MicroLispLib
         private ILNode Pass(ILNode node)
         {
             return node;
-        }
-
-        private LNull Fun(LString name, LList args, LLambda body)
-        {
-            _funs.Add(
-                (string)name,
-                new Tuple<LList, LLambda>(args, body)
-            );
-            return LNullVal;
-        }
-
-        private LNull FunFake(LString name, LList args, LLambda body)
-        {
-            return LNullVal;
         }
 #endregion
     }

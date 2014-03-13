@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using MicroLispLib;
 
 namespace microlisp
@@ -8,24 +9,27 @@ namespace microlisp
         static void Main(string[] args)
         {
             var lisp = new ShLisp();
+            var definitions = lisp.Parse(@"(
+            (fun '++ '(set _0 (+ (eval _0) 1)))                                       
+            (fun 'for '(
+                while '(eval _0) '((eval _2) (eval _1))     
+            ))
+            )");
+            lisp.Eval(definitions);
 
-            var ast = lisp.Parse(@"
-            (
-                (fun increment (a b) '(
-                    set (get a) ( + (get a) (get b) )
-                ))
-                
+            var script = lisp.Parse(@"(                
+                (set 'x 0)            
+                (set 'y 0)            
+                (for '(< x 2000) '(++ 'x) '(++ 'y))
+                (print y)
+            )");
 
-                (set x 1)
-                (debug (increment (get x) 2))
-                (debug (get x))
-            )
-            ");
-
-
-            //(do (get while))
-            var res = lisp.Exec(ast);
-            Console.Write(false);
+            var s = new Stopwatch();
+            s.Start();
+            var res = lisp.Eval(script);    
+            Console.Write(s.ElapsedMilliseconds + "ms");
+            s.Stop();
+            Console.ReadKey();
         }
     }
 }

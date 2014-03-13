@@ -44,8 +44,8 @@
     <Compile Include="ILNumeric.cs" />
     <Compile Include="LBool.cs" />
     <Compile Include="LFloat.cs" />
+    <Compile Include="LIdentifier.cs" />
     <Compile Include="LInteger.cs" />
-    <Compile Include="LLambda.cs" />
     <Compile Include="LList.cs" />
     <Compile Include="LNull.cs" />
     <Compile Include="LString.cs" />

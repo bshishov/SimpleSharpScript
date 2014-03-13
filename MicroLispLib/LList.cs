@@ -7,7 +7,12 @@ namespace MicroLispLib
     /// </summary>
     public class LList : List<ILNode>, ILNode
     {
-        internal bool Quoted = false;
+        public bool Quoted { get; private set; }
+
+        public LList(bool quoted = false)
+        {
+            Quoted = quoted;
+        }
 
         public override string ToString()
         {
